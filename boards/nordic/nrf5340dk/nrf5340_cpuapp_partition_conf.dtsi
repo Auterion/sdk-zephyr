@@ -22,21 +22,8 @@
  */
 
 &slot0_partition {
-	reg = <0x00010000 0x40000>;
+	reg = <0x00020000 0xD0000>;
 };
-
-&slot0_ns_partition {
-	reg = <0x00050000 0x30000>;
-};
-
-&slot1_partition {
-	reg = <0x00080000 0x40000>;
-};
-
-&slot1_ns_partition {
-	reg = <0x000c0000 0x30000>;
-};
-
 /* Default SRAM planning when building for nRF5340 with
  * ARM TrustZone-M support
  * - Lowest 256 kB SRAM allocated to Secure image (sram0_s)

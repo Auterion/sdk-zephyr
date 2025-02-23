@@ -161,6 +161,8 @@ static struct __rndis {
 	.speed = 0,
 };
 
+extern uint8_t mac_override[6];
+
 static uint8_t manufacturer[] = CONFIG_USB_DEVICE_MANUFACTURER;
 static uint32_t drv_version = 1U;
 
@@ -576,13 +578,13 @@ static int rndis_query_handle(uint8_t *data, uint32_t len)
 		/* IEEE 802.3 */
 	case RNDIS_OBJECT_ID_802_3_PERMANENT_ADDRESS:
 		LOG_DBG("RNDIS_OBJECT_ID_802_3_PERMANENT_ADDRESS");
-		memcpy(net_buf_add(buf, sizeof(rndis.mac)), rndis.mac,
-		       sizeof(rndis.mac));
+		memcpy(net_buf_add(buf, sizeof(mac_override)), mac_override,
+		       sizeof(mac_override));
 		break;
 	case RNDIS_OBJECT_ID_802_3_CURR_ADDRESS:
 		LOG_DBG("RNDIS_OBJECT_ID_802_3_CURR_ADDRESS");
-		memcpy(net_buf_add(buf, sizeof(rndis.mac)), rndis.mac,
-		       sizeof(rndis.mac));
+		memcpy(net_buf_add(buf, sizeof(mac_override)), mac_override,
+		       sizeof(mac_override));
 		break;
 	case RNDIS_OBJECT_ID_802_3_MCAST_LIST:
 		LOG_DBG("RNDIS_OBJECT_ID_802_3_MCAST_LIST");

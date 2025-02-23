@@ -657,7 +657,7 @@ static int enable(const struct shell_transport *transport, bool blocking)
 	return 0;
 }
 
-static int write(const struct shell_transport *transport,
+static int write_telnet(const struct shell_transport *transport,
 		 const void *data, size_t length, size_t *cnt)
 {
 	struct shell_telnet_line_buf *lb;
@@ -725,7 +725,7 @@ static int write(const struct shell_transport *transport,
 	return 0;
 }
 
-static int read(const struct shell_transport *transport,
+static int read_telnet(const struct shell_transport *transport,
 		void *data, size_t length, size_t *cnt)
 {
 	size_t read_len;
@@ -772,8 +772,8 @@ const struct shell_transport_api shell_telnet_transport_api = {
 	.init = init,
 	.uninit = uninit,
 	.enable = enable,
-	.write = write,
-	.read = read
+	.write = write_telnet,
+	.read = read_telnet
 };
 
 static int enable_shell_telnet(void)

@@ -1,0 +1,8 @@
+board:
+  name: arfa
+  vendor: auterion
+  socs:
+  - name: 'nrf5340'
+    variants:
+    - name: 'ns'
+      cpucluster: 'cpuapp'

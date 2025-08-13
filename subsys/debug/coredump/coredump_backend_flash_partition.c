@@ -23,7 +23,8 @@ LOG_MODULE_REGISTER(coredump, CONFIG_KERNEL_LOG_LEVEL);
  * @brief Simple coredump backend to store data in flash partition.
  *
  * This provides a simple backend to store coredump data in a flash
- * partition, labeled "coredump-partition" in devicetree.
+ * partition, referenced via chosen node "zephyr,coredump-partition" 
+ * in devicetree.
  *
  * On the partition, a header is stored at the beginning with padding
  * at the end to align with flash write size. Then the actual
@@ -31,22 +32,24 @@ LOG_MODULE_REGISTER(coredump, CONFIG_KERNEL_LOG_LEVEL);
  * function so that the first read of a data stream is always
  * aligned to flash write size.
  */
-#define FLASH_PARTITION		coredump_partition
-#define FLASH_PARTITION_ID	FIXED_PARTITION_ID(FLASH_PARTITION)
 
-#if !FIXED_PARTITION_EXISTS(FLASH_PARTITION)
-#error "Need a fixed partition named 'coredump-partition'!"
-
-#else
+/* Use chosen node instead of fixed partition */
+#if DT_HAS_CHOSEN(zephyr_coredump_partition)
+#define FLASH_PARTITION_NODE	DT_CHOSEN(zephyr_coredump_partition)
+#define FLASH_PARTITION_ID	DT_FIXED_PARTITION_ID(FLASH_PARTITION_NODE)
 
 #define FLASH_CONTROLLER	\
-	DT_PARENT(DT_PARENT(DT_NODELABEL(FLASH_PARTITION)))
+	DT_PARENT(DT_PARENT(FLASH_PARTITION_NODE))
 
 #define FLASH_WRITE_SIZE	DT_PROP(FLASH_CONTROLLER, write_block_size)
 #define FLASH_BUF_SIZE		FLASH_WRITE_SIZE
 #define FLASH_ERASE_SIZE	DT_PROP(FLASH_CONTROLLER, erase_block_size)
 
 #define HDR_VER			1
+
+#else
+#error "Need a partition referenced by chosen node 'zephyr,coredump-partition'!"
+#endif
 
 #define FLASH_BACKEND_SEM_TIMEOUT (k_is_in_isr() ? K_NO_WAIT : K_FOREVER)
 
@@ -922,5 +925,3 @@ SHELL_CMD_REGISTER(coredump, &sub_coredump,
 		   "Coredump commands (flash partition backend)", NULL);
 
 #endif /* CONFIG_DEBUG_COREDUMP_SHELL */
-
-#endif /* FIXED_PARTITION_EXISTS(coredump_partition) */

@@ -12,6 +12,7 @@
 		zephyr,bt-hci-ipc = &ipc0;
 		nordic,802154-spinel-ipc = &ipc0;
 		zephyr,ieee802154 = &ieee802154;
+		zephyr,coredump-partition = &coredump_partition;
 	};
 
 	leds {
@@ -226,13 +227,16 @@ arduino_spi: &spi4 {
 
 		boot_partition: partition@0 {
 			label = "mcuboot";
-			reg = <0x00000000 0x00020000>;
+			reg = <0x00000000 0x00018000>;
+		};
+		coredump_partition: partition@18000 {
+			label = "coredump-partition";
+			reg = <0x00018000 0x00008000>;
 		};
 		slot0_partition: partition@20000 {
 			label = "image-0";
 			reg = <0x00020000 0xD0000>;
 		};
-
 		/* 0xf0000 to 0xf7fff reserved for TF-M partitions */
 		storage_partition: partition@f8000 {
 			label = "storage";

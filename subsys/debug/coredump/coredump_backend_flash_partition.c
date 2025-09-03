@@ -595,7 +595,6 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 			LOG_INF("Coredump: Attempting direct flash write");
 			
 			/* Calculate proper aligned offset and size */
-			size_t header_size = ROUND_UP(sizeof(struct flash_hdr_t), FLASH_WRITE_SIZE);
 			size_t write_offset = header_size + total_written;
 			
 			/* CRITICAL: Check if write would exceed partition boundaries */

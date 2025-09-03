@@ -275,7 +275,7 @@ static int cmd_kernel_stacks(const struct shell *sh,
 #endif
 
 #if defined(CONFIG_SYS_HEAP_RUNTIME_STATS) && (K_HEAP_MEM_POOL_SIZE > 0)
-extern struct sys_heap _system_heap;
+extern struct k_heap _system_heap;
 
 static int cmd_kernel_heap(const struct shell *sh,
 			   size_t argc, char **argv)
@@ -286,7 +286,7 @@ static int cmd_kernel_heap(const struct shell *sh,
 	int err;
 	struct sys_memory_stats stats;
 
-	err = sys_heap_runtime_stats_get(&_system_heap, &stats);
+	err = sys_heap_runtime_stats_get(&_system_heap.heap, &stats);
 	if (err) {
 		shell_error(sh, "Failed to read kernel system heap statistics (err %d)", err);
 		return -ENOEXEC;

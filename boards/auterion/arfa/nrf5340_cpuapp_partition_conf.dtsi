@@ -22,7 +22,7 @@
  */
 
 &slot0_partition {
-	reg = <0x00020000 0xD0000>;
+	reg = <0x00018000 0xD0000>;
 };
 /* Default SRAM planning when building for nRF5340 with
  * ARM TrustZone-M support

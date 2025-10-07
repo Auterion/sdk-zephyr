@@ -20,6 +20,10 @@ static struct coredump_backend_api
 extern struct coredump_backend_api coredump_backend_flash_partition;
 static struct coredump_backend_api
 	*backend_api = &coredump_backend_flash_partition;
+#elif defined(CONFIG_DEBUG_COREDUMP_BACKEND_RAM)
+extern struct coredump_backend_api coredump_backend_ram;
+static struct coredump_backend_api
+	*backend_api = &coredump_backend_ram;
 #elif defined(CONFIG_DEBUG_COREDUMP_BACKEND_INTEL_ADSP_MEM_WINDOW)
 extern struct coredump_backend_api coredump_backend_intel_adsp_mem_window;
 static struct coredump_backend_api

@@ -28,6 +28,12 @@ config DEBUG_COREDUMP_BACKEND_FLASH_PARTITION
 	  Core dump is saved to a flash partition with DTS alias
 	  "coredump-partition".
 
+config DEBUG_COREDUMP_BACKEND_RAM
+	bool "Use reserved RAM for coredump"
+	help
+	  Core dump is saved to a reserved memory region with DTS chosen
+	  "zephyr,coredump-memory".
+
 config DEBUG_COREDUMP_BACKEND_INTEL_ADSP_MEM_WINDOW
 	bool "Use memory window for coredump on Intel ADSP"
 	depends on DT_HAS_INTEL_ADSP_MEM_WINDOW_ENABLED

@@ -12,7 +12,7 @@
 		zephyr,bt-hci-ipc = &ipc0;
 		nordic,802154-spinel-ipc = &ipc0;
 		zephyr,ieee802154 = &ieee802154;
-		zephyr,coredump-partition = &coredump_partition;
+		zephyr,coredump-memory = &coredump_memory;
 	};
 
 	leds {
@@ -233,11 +233,7 @@ arduino_spi: &spi4 {
 			label = "image-0";
 			reg = <0x00018000 0xD0000>;
 		};
-		coredump_partition: partition@E8000 {
-			label = "coredump-partition";
-			reg = <0x000E8000 0x00008000>;
-		};
-		/* 0xf0000 to 0xf7fff reserved for TF-M partitions */
+		/* 0xE8000 to 0xf7fff reserved for TF-M partitions */
 		storage_partition: partition@f8000 {
 			label = "storage";
 			reg = <0x000f8000 0x00008000>;
@@ -271,6 +267,21 @@ zephyr_udc0: &usbd {
 
 		sram0_ns: image_ns@20040000 {
 			/* Non-Secure image memory */
+		};
+
+		coredump_memory: coredump@20068000 {
+			/* Reserved retained memory for coredump storage (2KB) */
+			compatible = "zephyr,memory-region", "mmio-sram";
+			reg = <0x20068000 0x800>;
+			zephyr,memory-region = "CoredumpRetainedMem";
+			status = "okay";
+
+			coredump_retainedmem: retainedmem {
+				compatible = "zephyr,retained-ram";
+				status = "okay";
+				#address-cells = <1>;
+				#size-cells = <1>;
+			};
 		};
 	};
 };

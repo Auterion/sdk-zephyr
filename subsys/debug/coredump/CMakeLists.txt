@@ -24,6 +24,16 @@ zephyr_library_sources_ifdef(
   )
 
 zephyr_library_sources_ifdef(
+  CONFIG_DEBUG_COREDUMP_BACKEND_RAM
+  coredump_backend_ram.c
+  )
+
+zephyr_library_sources_ifdef(
+  CONFIG_DEBUG_COREDUMP_BACKEND_RAM
+  coredump_backend_ram.c
+  )
+
+zephyr_library_sources_ifdef(
   CONFIG_DEBUG_COREDUMP_BACKEND_INTEL_ADSP_MEM_WINDOW
   coredump_backend_intel_adsp_mem_window.c
   )

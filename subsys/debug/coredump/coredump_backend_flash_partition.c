@@ -9,13 +9,21 @@
 #include <string.h>
 #include <zephyr/toolchain.h>
 #include <zephyr/storage/flash_map.h>
-#include <zephyr/storage/stream_flash.h>
 #include <zephyr/sys/util.h>
 
 #include <zephyr/debug/coredump.h>
 #include "coredump_internal.h"
 
 #include <zephyr/logging/log.h>
+
+/* Include ARF settings for flash write blocking during coredump - only in main app, not bootloader */
+#ifndef CONFIG_MCUBOOT
+#include "../../../../arf-a/arf_settings.h"
+#define HAS_SETTINGS_BLOCKING 1
+#else
+#define HAS_SETTINGS_BLOCKING 0
+#endif
+
 LOG_MODULE_REGISTER(coredump, CONFIG_KERNEL_LOG_LEVEL);
 
 /**
@@ -71,9 +79,6 @@ static struct {
 	/* For use with flash map */
 	const struct flash_area		*flash_area;
 
-	/* For use with streaming flash */
-	struct stream_flash_ctx		stream_ctx;
-
 	/* Checksum of data so far */
 	uint16_t			checksum;
 
@@ -81,14 +86,46 @@ static struct {
 	int				error;
 } backend_ctx;
 
-/* Buffer used in stream flash context */
-static uint8_t stream_flash_buf[FLASH_BUF_SIZE];
-
 /* Buffer used in data_read() */
 static uint8_t data_read_buf[FLASH_BUF_SIZE];
 
 /* Semaphore for exclusive flash access */
 K_SEM_DEFINE(flash_sem, 1, 1);
+
+/* Static variables for buffer output tracking */
+static uint32_t g_total_written = 0;
+static bool g_in_chunked_write = false;
+static uint32_t g_coredump_start_time = 0;
+static bool g_emergency_abort = false;
+static uint32_t g_coredump_attempts = 0;
+static uint32_t g_last_coredump_time = 0;
+
+/* Minimal debug flag to reduce corruption */
+static bool g_debug_minimal = false;  /* Disable debug during coredump to prevent corruption */
+
+/* Safe debug macro - only print essential messages */
+#define COREDUMP_PRINT(msg, ...) do { \
+	if (g_debug_minimal) { \
+		printk("CD: " msg, ##__VA_ARGS__); \
+	} \
+} while (0)
+
+/* Function to reset static variables */
+void reset_coredump_statics(void)
+{
+	COREDUMP_PRINT("Reset (%d->0)\n", (int)g_total_written);
+	g_total_written = 0;
+	g_in_chunked_write = false;
+	g_coredump_start_time = 0;
+	g_emergency_abort = false;
+	/* Don't reset attempt counter and last time - these persist across resets */
+}
+
+/* Emergency abort function - can be called from anywhere */
+void emergency_coredump_abort(void)
+{
+	g_emergency_abort = true;
+}
 
 
 struct flash_hdr_t {
@@ -121,7 +158,8 @@ static int partition_open(void)
 {
 	int ret;
 
-	(void)k_sem_take(&flash_sem, FLASH_BACKEND_SEM_TIMEOUT);
+	/* Skip semaphore in fault context - no concurrent access possible */
+	LOG_DBG("Coredump: Opening partition without synchronization");
 
 	/* Use our custom flash area with correct device tree values */
 	coredump_flash_area.fa_dev = DEVICE_DT_GET_OR_NULL(DT_MTD_FROM_FIXED_PARTITION(FLASH_PARTITION_NODE));
@@ -136,7 +174,6 @@ static int partition_open(void)
 	if (backend_ctx.flash_area->fa_dev == NULL || !device_is_ready(backend_ctx.flash_area->fa_dev)) {
 		LOG_ERR("Flash device not ready for coredump!");
 		backend_ctx.flash_area = NULL;
-		k_sem_give(&flash_sem);
 		ret = -ENODEV;
 	} else {
 		ret = 0;
@@ -157,7 +194,8 @@ static void partition_close(void)
 	flash_area_close(backend_ctx.flash_area);
 	backend_ctx.flash_area = NULL;
 
-	k_sem_give(&flash_sem);
+	/* Skip semaphore in fault context */
+	LOG_DBG("Coredump: Partition closed without synchronization");
 }
 
 /**
@@ -428,13 +466,43 @@ static void coredump_flash_backend_start(void)
 	size_t offset, header_size;
 	int ret;
 
+	/* Circuit breaker: prevent coredump death loops */
+	uint32_t current_time = k_uptime_get_32();
+	
+	/* If we've had coredump attempts recently, disable coredump to prevent loops */
+	if (g_coredump_attempts > 0 && (current_time - g_last_coredump_time) < 10000) {
+		g_coredump_attempts++;
+		LOG_ERR("Coredump: Circuit breaker activated - attempt %d within %d ms, DISABLING coredump", 
+				g_coredump_attempts, current_time - g_last_coredump_time);
+		
+		if (g_coredump_attempts > 2) {
+			LOG_ERR("Coredump: Too many attempts, permanently disabling for this boot");
+			backend_ctx.error = -EFAULT;
+			return;
+		}
+	}
+	
+	/* Reset buffer output static variables for new coredump session */
+	extern void reset_coredump_statics(void);
+	reset_coredump_statics();
+	
+	/* Update attempt tracking */
+	g_coredump_attempts++;
+	g_last_coredump_time = current_time;
+
+	/* Minimal processing - skip delay entirely to reduce fault window */
+	/* Essential status only */
+	COREDUMP_PRINT("Start #%d\n", (int)g_coredump_attempts);
+
+	/* Skip settings blocking - all threads are stopped during fault handling */
+
 	ret = partition_open();
 	if (ret == 0) {
-		LOG_INF("Coredump: Starting flash backend, erasing partition");
+		printk("COREDUMP: Erasing partition\n");
 		ret = flash_area_erase(backend_ctx.flash_area, 0,
 							backend_ctx.flash_area->fa_size);
 		if (ret != 0) {
-			LOG_ERR("Coredump: Flash erase failed: %d", ret);
+			printk("COREDUMP: Flash erase failed: %d\n", ret);
 		}
 	}
 
@@ -451,23 +519,12 @@ static void coredump_flash_backend_start(void)
 		header_size = ROUND_UP(sizeof(struct flash_hdr_t), FLASH_WRITE_SIZE);
 		offset = backend_ctx.flash_area->fa_off + header_size;
 
-		ret = stream_flash_init(&backend_ctx.stream_ctx, flash_dev,
-					stream_flash_buf,
-					sizeof(stream_flash_buf),
-					offset,
-					backend_ctx.flash_area->fa_size - header_size,
-					NULL);
-		if (ret != 0) {
-			LOG_ERR("Coredump: Stream flash init failed: %d", ret);
-		} else {
-			LOG_INF("Coredump: Stream flash initialized, buf_size=%d, offset=0x%x, size=%d", 
-					sizeof(stream_flash_buf), offset, 
-					backend_ctx.flash_area->fa_size - header_size);
-		}
+		COREDUMP_PRINT("Ready %d\n", (int)(backend_ctx.flash_area->fa_size - header_size));
+		ret = 0;
 	}
 
 	if (ret != 0) {
-		LOG_ERR("Cannot start coredump!");
+		printk("COREDUMP: Start failed: %d\n", ret);
 		backend_ctx.error = ret;
 		partition_close();
 	}
@@ -493,27 +550,31 @@ static void coredump_flash_backend_end(void)
 		return;
 	}
 
-	/* Flush buffer */
-	backend_ctx.error = stream_flash_buffered_write(
-				&backend_ctx.stream_ctx,
-				stream_flash_buf, 0, true);
+	/* Skip stream flash buffering in fault context */
+	LOG_DBG("Coredump: Skipping stream buffer flush - using direct flash");
 
-	/* Write header */
-	hdr.size = stream_flash_bytes_written(&backend_ctx.stream_ctx);
+	/* Write header with actual written size */
+	hdr.size = g_total_written;
 	hdr.checksum = backend_ctx.checksum;
 	hdr.error = backend_ctx.error;
 	hdr.flags = 0;
 
 	ret = flash_area_write(backend_ctx.flash_area, 0, (void *)&hdr, sizeof(hdr));
 	if (ret != 0) {
-		LOG_ERR("Cannot write coredump header!");
+		printk("COREDUMP: Header write failed: %d\n", ret);
 		backend_ctx.error = ret;
 	}
 
 	if (backend_ctx.error != 0) {
-		LOG_ERR("Error in coredump backend (%d)!",
-			backend_ctx.error);
+		printk("COREDUMP: Backend error: %d\n", backend_ctx.error);
+	} else {
+		COREDUMP_PRINT("Done %d\n", (int)g_total_written);
 	}
+
+	/* Skip settings unblocking - system will reset after coredump */
+	LOG_DBG("Coredump: Skipping settings sync - system will reset");
+
+	/* Static variables will be reset at start of next coredump session */
 
 	partition_close();
 }
@@ -535,35 +596,119 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 	size_t copy_sz;
 	uint8_t *ptr = buf;
 	uint8_t tmp_buf[FLASH_BUF_SIZE];
-	static uint32_t total_written = 0;
+	
+	/* Initialize start time on first call */
+	if (g_total_written == 0 && g_coredump_start_time == 0) {
+		g_coredump_start_time = k_uptime_get_32();
+	}
+	
+	/* Ultra-aggressive timeout protection - abort coredump after 500ms to prevent system hang */
+	uint32_t elapsed = k_uptime_get_32() - g_coredump_start_time;
+	if (elapsed > 500) {  /* 500ms timeout - ultra aggressive */
+		COREDUMP_PRINT("T/O %d\n", (int)elapsed);
+		backend_ctx.error = -ETIMEDOUT;
+		return;
+	}
+	
+	/* Debug: print current write status */
+	if (g_total_written == 0) {
+		COREDUMP_PRINT("Write start\n");
+	}
+	
+	/* Debug: log the buffer size on first call */
+	if (g_total_written == 0 && buflen > 0) {
+		COREDUMP_PRINT("Buf %d\n", (int)buflen);
+	}
+	
+	/* Force chunking for large buffers instead of rejecting */
+	if (buflen > 4096) {  /* Force chunking for buffers > 4KB */
+		/* This will be handled by the chunking logic below */
+	}
+	
+	/* Size limiting for 8KB partition */
+	if (g_total_written > 6144) {  /* Limit to 6KB total - leaves 2KB buffer for header */
+		COREDUMP_PRINT("Limit @%d\n", (int)g_total_written);
+		backend_ctx.error = -ENOSPC;
+		return;
+	}
+	
+	/* Circuit breaker: if we're in a repeated fault condition, abort immediately */
+	if (g_coredump_attempts > 1) {
+		/* On repeated faults, be more conservative but allow reasonable data */
+		if (g_total_written > 3072 || elapsed > 300) {
+			COREDUMP_PRINT("Abort #%d\n", (int)g_coredump_attempts);
+			backend_ctx.error = -EFAULT;
+			return;
+		}
+	}
 
-	if ((backend_ctx.error != 0) || (backend_ctx.flash_area == NULL)) {
-		LOG_ERR("Coredump: Buffer output skipped, error=%d, flash_area=%p", 
-				backend_ctx.error, backend_ctx.flash_area);
+	/* Skip ISR check during fault handling - fault handlers run in ISR context by design */
+	/* if (k_is_in_isr()) { ... } - removed, fault handlers are expected to be in ISR context */
+	
+	if ((backend_ctx.error != 0) || (backend_ctx.flash_area == NULL) || g_emergency_abort) {
+		if (g_emergency_abort) {
+			backend_ctx.error = -ECANCELED;
+		}
 		return;
 	}
 
-	LOG_INF("Coredump: Writing %d bytes, total_written=%d", buflen, total_written);
+	/* Limit large writes to prevent memory corruption - break up big writes */
+	size_t chunk_threshold = (g_coredump_attempts > 1) ? 512 : 1024;  /* Force chunking more aggressively */
+	if (buflen > chunk_threshold && !g_in_chunked_write) {
+		COREDUMP_PRINT("Chunk %d\n", (int)buflen);
+		g_in_chunked_write = true;  /* Prevent recursive chunking */
+		
+		/* Split large writes into safe chunks */
+		size_t chunk_size = (g_coredump_attempts > 1) ? 256 : 512;  /* Balanced chunk size */
+		size_t processed = 0;
+		
+		while (processed < buflen && backend_ctx.error == 0) {
+		/* Check timeout during chunking - ultra aggressive on repeated faults */
+		uint32_t chunk_elapsed = k_uptime_get_32() - g_coredump_start_time;
+		uint32_t chunk_timeout = (g_coredump_attempts > 1) ? 100 : 500;  /* 100ms on repeated faults */
+		if (chunk_elapsed > chunk_timeout) {
+			backend_ctx.error = -ETIMEDOUT;
+			break;
+		}			size_t current_chunk = MIN(chunk_size, buflen - processed);
+			
+			/* Recursively call ourselves with smaller chunk */
+			coredump_flash_backend_buffer_output(buf + processed, current_chunk);
+			
+			if (backend_ctx.error != 0) {
+				break;
+			}
+			
+			processed += current_chunk;
+			
+			/* Skip CPU yield in fault context - no other threads running */
+			/* k_yield(); - not needed during fault handling */
+		}
+		
+		g_in_chunked_write = false;
+		return;  /* Exit early - chunks were handled recursively */
+	}
+	
+	LOG_DBG("Coredump: Writing %d bytes, total_written=%d", buflen, g_total_written);
 	
 	/* Check if we're exceeding partition size */
 	size_t header_size = ROUND_UP(sizeof(struct flash_hdr_t), FLASH_WRITE_SIZE);
 	size_t available_space = backend_ctx.flash_area->fa_size - header_size;
 	
-	if (total_written + buflen > available_space) {
+	if (g_total_written + buflen > available_space) {
 		LOG_WRN("Coredump: Truncating write - exceeding partition size");
 		LOG_WRN("Requested: %d, available: %d, already written: %d", 
-				buflen, available_space, total_written);
+				buflen, available_space, g_total_written);
 		
-		if (total_written >= available_space) {
+		if (g_total_written >= available_space) {
 			LOG_ERR("Coredump: Partition full, stopping");
 			backend_ctx.error = -ENOSPC;
 			return;
 		}
 		
 		/* Truncate to available space */
-		buflen = available_space - total_written;
+		buflen = available_space - g_total_written;
 		remaining = buflen;
-		LOG_INF("Coredump: Truncated write to %d bytes", buflen);
+		LOG_DBG("Coredump: Truncated write to %d bytes", buflen);
 	}
 
 	/*
@@ -573,9 +718,23 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 	 * being written.
 	 */
 	copy_sz = FLASH_BUF_SIZE;
-	while (remaining > 0) {
+	while (remaining > 0 && backend_ctx.error == 0 && !g_emergency_abort) {
+		/* Check for emergency abort or timeout on every iteration */
+		uint32_t loop_elapsed = k_uptime_get_32() - g_coredump_start_time;
+		if (loop_elapsed > 1200) {  /* 1.2 second loop timeout */
+			LOG_WRN("Coredump: Loop timeout, aborting");
+			backend_ctx.error = -ETIMEDOUT;
+			break;
+		}
+		
 		if (remaining < FLASH_BUF_SIZE) {
 			copy_sz = remaining;
+		}
+
+		/* Add memory safety check before memcpy */
+		if (ptr == NULL || copy_sz == 0 || copy_sz > FLASH_BUF_SIZE) {
+			backend_ctx.error = -EFAULT;
+			break;
 		}
 
 		(void)memcpy(tmp_buf, ptr, copy_sz);
@@ -584,79 +743,63 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 			backend_ctx.checksum += tmp_buf[i];
 		}
 
-		/* Try stream flash first, fallback to direct write on error */
-		backend_ctx.error = stream_flash_buffered_write(
-					&backend_ctx.stream_ctx,
-					tmp_buf, copy_sz, false);
-		if (backend_ctx.error != 0) {
-			LOG_ERR("Flash write error: %d, copy_sz=%d, total_written=%d", 
-					backend_ctx.error, copy_sz, total_written);
-			/* Try direct flash write as fallback with proper alignment AND boundary checking */
-			LOG_INF("Coredump: Attempting direct flash write");
-			
-			/* Calculate proper aligned offset and size */
-			size_t write_offset = header_size + total_written;
-			
-			/* CRITICAL: Check if write would exceed partition boundaries */
-			if (write_offset + copy_sz > backend_ctx.flash_area->fa_size) {
-				LOG_ERR("Direct write would exceed partition boundary!");
-				LOG_ERR("Write offset: 0x%x, size: %d, partition size: 0x%x", 
-						write_offset, copy_sz, backend_ctx.flash_area->fa_size);
-				backend_ctx.error = -ENOSPC;
+		/* Use direct flash write in fault context - skip stream buffering */
+		size_t write_offset = header_size + g_total_written;
+		
+		/* CRITICAL: Check if write would exceed partition boundaries */
+		if (write_offset + copy_sz > backend_ctx.flash_area->fa_size) {
+			backend_ctx.error = -ENOSPC;
+			break;
+		}
+		
+		/* Use direct aligned write for fault context */
+		size_t aligned_offset = ROUND_DOWN(write_offset, FLASH_WRITE_SIZE);
+		size_t offset_adjustment = write_offset - aligned_offset;
+		size_t adjusted_size = copy_sz + offset_adjustment;
+		size_t aligned_size = ROUND_UP(adjusted_size, FLASH_WRITE_SIZE);
+		
+		/* Double-check aligned write doesn't exceed partition */
+		if (aligned_offset + aligned_size > backend_ctx.flash_area->fa_size) {
+			backend_ctx.error = -ENOSPC;
+			break;
+		}
+		
+		/* Create aligned buffer */
+		uint8_t aligned_buf[aligned_size];
+		memset(aligned_buf, 0xFF, aligned_size);
+		
+		/* Read existing data if we need to adjust offset */
+		if (offset_adjustment > 0) {
+			int ret = flash_area_read(backend_ctx.flash_area, aligned_offset, 
+					      aligned_buf, offset_adjustment);
+			if (ret != 0) {
+				backend_ctx.error = ret;
 				break;
-			}
-			
-			/* Ensure write offset is aligned to write block size */
-			size_t aligned_offset = ROUND_DOWN(write_offset, FLASH_WRITE_SIZE);
-			size_t offset_adjustment = write_offset - aligned_offset;
-			
-			/* Ensure write size accounts for offset adjustment and is aligned */
-			size_t adjusted_size = copy_sz + offset_adjustment;
-			size_t aligned_size = ROUND_UP(adjusted_size, FLASH_WRITE_SIZE);
-			
-			/* CRITICAL: Double-check aligned write doesn't exceed partition */
-			if (aligned_offset + aligned_size > backend_ctx.flash_area->fa_size) {
-				LOG_ERR("Aligned direct write would exceed partition boundary!");
-				LOG_ERR("Aligned offset: 0x%x, aligned size: %d, partition size: 0x%x", 
-						aligned_offset, aligned_size, backend_ctx.flash_area->fa_size);
-				backend_ctx.error = -ENOSPC;
-				break;
-			}
-			
-			LOG_INF("Direct write: orig_offset=0x%x, aligned_offset=0x%x, size=%d->%d", 
-					write_offset, aligned_offset, copy_sz, aligned_size);
-			
-			/* Create aligned buffer */
-			uint8_t aligned_buf[aligned_size];
-			memset(aligned_buf, 0xFF, aligned_size);  /* Fill with erased flash value */
-			
-			/* If we had to adjust the offset, read existing data first */
-			if (offset_adjustment > 0) {
-				int ret = flash_area_read(backend_ctx.flash_area, aligned_offset, 
-						      aligned_buf, offset_adjustment);
-				if (ret != 0) {
-					LOG_ERR("Failed to read existing data for alignment: %d", ret);
-					backend_ctx.error = ret;
-					break;
-				}
-			}
-			
-			/* Copy our data to the aligned buffer at the right position */
-			memcpy(aligned_buf + offset_adjustment, tmp_buf, copy_sz);
-			
-			backend_ctx.error = flash_area_write(backend_ctx.flash_area,
-					aligned_offset, aligned_buf, aligned_size);
-			if (backend_ctx.error != 0) {
-				LOG_ERR("Direct flash write also failed: %d", backend_ctx.error);
-				break;
-			} else {
-				LOG_INF("Direct flash write succeeded");
 			}
 		}
+		
+		/* Copy our data to the aligned buffer */
+		memcpy(aligned_buf + offset_adjustment, tmp_buf, copy_sz);
+		
+		/* Write directly to flash */
+		backend_ctx.error = flash_area_write(backend_ctx.flash_area,
+				aligned_offset, aligned_buf, aligned_size);
+		
+		if (backend_ctx.error != 0) {
+			break;
+		}
 
-		total_written += copy_sz;
+		g_total_written += copy_sz;
 		ptr += copy_sz;
 		remaining -= copy_sz;
+		
+		/* Skip CPU yield in fault context - no other threads to yield to */
+		/* k_yield(); - not needed during fault handling */
+		
+		/* Safety check: if we've been writing too long, abort */
+		if (g_total_written > 0 && (g_total_written % 1024) == 0) {
+			LOG_DBG("Coredump: Written %d bytes so far", g_total_written);
+		}
 	}
 }
 

@@ -235,13 +235,10 @@ arduino_spi: &spi4 {
 		};
 		coredump_partition: partition@E8000 {
 			label = "coredump-partition";
-			reg = <0x000E8000 0x00008000>;
+			reg = <0x000E8000 0x00002000>;
 		};
 		/* 0xf0000 to 0xf7fff reserved for TF-M partitions */
-		storage_partition: partition@f8000 {
-			label = "storage";
-			reg = <0x000f8000 0x00008000>;
-		};
+		/* 0xf8000 to 0x100000 will be used by settings_storage (32KB) */
 	};
 };
 

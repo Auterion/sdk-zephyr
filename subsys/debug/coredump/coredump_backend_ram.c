@@ -14,9 +14,6 @@
 #include <zephyr/debug/coredump.h>
 #include "coredump_internal.h"
 
-#include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(coredump_ram, CONFIG_KERNEL_LOG_LEVEL);
-
 /**
  * @file
  * @brief Coredump backend to store data in reserved RAM.
@@ -102,24 +99,6 @@ static int backend_init(void)
 	backend_ctx.memory_area = (uint8_t *)COREDUMP_MEMORY_ADDR;
 	backend_ctx.memory_size = COREDUMP_MEMORY_SIZE;
 	backend_ctx.write_pos = sizeof(struct ram_hdr_t);
-
-	printk("COREDUMP: RAM backend initialized at 0x%08x, size=%u bytes (%u KB)\n",
-	       (unsigned)COREDUMP_MEMORY_ADDR, 
-	       (unsigned)COREDUMP_MEMORY_SIZE,
-	       (unsigned)COREDUMP_MEMORY_SIZE / 1024);
-
-	/* Check if there's already a valid coredump in RAM */
-	if (backend_has_stored_dump()) {
-		struct ram_hdr_t *hdr = (struct ram_hdr_t *)backend_ctx.memory_area;
-		printk("COREDUMP: Found existing coredump in RAM (size=%zu bytes, flags=0x%04x)\n",
-		       hdr->size, hdr->flags);
-		
-		if (hdr->flags & COREDUMP_FLAG_TRUNCATED) {
-			printk("COREDUMP: Warning - coredump was truncated\n");
-		}
-	} else {
-		printk("COREDUMP: No existing coredump found in RAM\n");
-	}
 
 	return 0;
 }
@@ -226,8 +205,6 @@ static void backend_start(void)
 	
 	/* Clear any existing coredump */
 	backend_clear();
-	
-	LOG_DBG("Coredump RAM backend started");
 }
 
 /**
@@ -253,8 +230,6 @@ static void backend_buffer_output(uint8_t *buf, size_t buflen)
 			return;
 		}
 		/* Truncate to available space */
-		printk("COREDUMP: Truncating %zu bytes to fit in %zu byte buffer\n", 
-		       buflen, available_space);
 		buflen = available_space;
 		backend_ctx.truncated = true;
 	}
@@ -296,21 +271,6 @@ static void backend_end(void)
 	hdr->flags = backend_ctx.truncated ? COREDUMP_FLAG_TRUNCATED : 0;
 	hdr->checksum = backend_ctx.checksum;
 	hdr->error = backend_ctx.error;
-	
-	printk("COREDUMP: Writing header - magic=0x%08x, size=%zu, flags=0x%04x\n",
-	       hdr->magic, hdr->size, hdr->flags);
-	printk("COREDUMP: Header at 0x%08x: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-	       (unsigned)hdr, ((uint8_t*)hdr)[0], ((uint8_t*)hdr)[1], ((uint8_t*)hdr)[2], 
-	       ((uint8_t*)hdr)[3], ((uint8_t*)hdr)[4], ((uint8_t*)hdr)[5], ((uint8_t*)hdr)[6], 
-	       ((uint8_t*)hdr)[7]);
-	
-	if (backend_ctx.truncated) {
-		printk("COREDUMP: Stored %zu bytes in RAM (TRUNCATED, checksum: 0x%04x)\n", 
-		       data_size, backend_ctx.checksum);
-	} else {
-		printk("COREDUMP: Stored %zu bytes in RAM (checksum: 0x%04x)\n", 
-		       data_size, backend_ctx.checksum);
-	}
 }
 
 /**

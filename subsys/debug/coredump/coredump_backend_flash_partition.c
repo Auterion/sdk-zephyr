@@ -15,9 +15,6 @@
 #include <zephyr/debug/coredump.h>
 #include "coredump_internal.h"
 
-#include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(coredump, CONFIG_KERNEL_LOG_LEVEL);
-
 /**
  * @file
  * @brief Simple coredump backend to store data in flash partition.
@@ -127,14 +124,8 @@ static int partition_open(void)
 	coredump_flash_area.fa_dev = DEVICE_DT_GET_OR_NULL(DT_MTD_FROM_FIXED_PARTITION(FLASH_PARTITION_NODE));
 	backend_ctx.flash_area = &coredump_flash_area;
 
-	/* Debug: Print detected partition size */
-	printk("COREDUMP: Partition offset=0x%x, size=%u bytes (%u KB)\n", 
-		   (unsigned)backend_ctx.flash_area->fa_off,
-		   (unsigned)backend_ctx.flash_area->fa_size,
-		   (unsigned)backend_ctx.flash_area->fa_size / 1024);
 
 	if (backend_ctx.flash_area->fa_dev == NULL || !device_is_ready(backend_ctx.flash_area->fa_dev)) {
-		LOG_ERR("Flash device not ready for coredump!");
 		backend_ctx.flash_area = NULL;
 		k_sem_give(&flash_sem);
 		ret = -ENODEV;
@@ -430,12 +421,8 @@ static void coredump_flash_backend_start(void)
 
 	ret = partition_open();
 	if (ret == 0) {
-		LOG_INF("Coredump: Starting flash backend, erasing partition");
 		ret = flash_area_erase(backend_ctx.flash_area, 0,
 							backend_ctx.flash_area->fa_size);
-		if (ret != 0) {
-			LOG_ERR("Coredump: Flash erase failed: %d", ret);
-		}
 	}
 
 	if (ret == 0) {
@@ -451,23 +438,15 @@ static void coredump_flash_backend_start(void)
 		header_size = ROUND_UP(sizeof(struct flash_hdr_t), FLASH_WRITE_SIZE);
 		offset = backend_ctx.flash_area->fa_off + header_size;
 
-		ret = stream_flash_init(&backend_ctx.stream_ctx, flash_dev,
+		stream_flash_init(&backend_ctx.stream_ctx, flash_dev,
 					stream_flash_buf,
 					sizeof(stream_flash_buf),
 					offset,
 					backend_ctx.flash_area->fa_size - header_size,
 					NULL);
-		if (ret != 0) {
-			LOG_ERR("Coredump: Stream flash init failed: %d", ret);
-		} else {
-			LOG_INF("Coredump: Stream flash initialized, buf_size=%d, offset=0x%x, size=%d", 
-					sizeof(stream_flash_buf), offset, 
-					backend_ctx.flash_area->fa_size - header_size);
-		}
 	}
 
 	if (ret != 0) {
-		LOG_ERR("Cannot start coredump!");
 		backend_ctx.error = ret;
 		partition_close();
 	}
@@ -506,13 +485,7 @@ static void coredump_flash_backend_end(void)
 
 	ret = flash_area_write(backend_ctx.flash_area, 0, (void *)&hdr, sizeof(hdr));
 	if (ret != 0) {
-		LOG_ERR("Cannot write coredump header!");
 		backend_ctx.error = ret;
-	}
-
-	if (backend_ctx.error != 0) {
-		LOG_ERR("Error in coredump backend (%d)!",
-			backend_ctx.error);
 	}
 
 	partition_close();
@@ -538,24 +511,15 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 	static uint32_t total_written = 0;
 
 	if ((backend_ctx.error != 0) || (backend_ctx.flash_area == NULL)) {
-		LOG_ERR("Coredump: Buffer output skipped, error=%d, flash_area=%p", 
-				backend_ctx.error, backend_ctx.flash_area);
 		return;
 	}
 
-	LOG_INF("Coredump: Writing %d bytes, total_written=%d", buflen, total_written);
-	
 	/* Check if we're exceeding partition size */
 	size_t header_size = ROUND_UP(sizeof(struct flash_hdr_t), FLASH_WRITE_SIZE);
 	size_t available_space = backend_ctx.flash_area->fa_size - header_size;
 	
 	if (total_written + buflen > available_space) {
-		LOG_WRN("Coredump: Truncating write - exceeding partition size");
-		LOG_WRN("Requested: %d, available: %d, already written: %d", 
-				buflen, available_space, total_written);
-		
 		if (total_written >= available_space) {
-			LOG_ERR("Coredump: Partition full, stopping");
 			backend_ctx.error = -ENOSPC;
 			return;
 		}
@@ -563,7 +527,6 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 		/* Truncate to available space */
 		buflen = available_space - total_written;
 		remaining = buflen;
-		LOG_INF("Coredump: Truncated write to %d bytes", buflen);
 	}
 
 	/*
@@ -589,19 +552,11 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 					&backend_ctx.stream_ctx,
 					tmp_buf, copy_sz, false);
 		if (backend_ctx.error != 0) {
-			LOG_ERR("Flash write error: %d, copy_sz=%d, total_written=%d", 
-					backend_ctx.error, copy_sz, total_written);
-			/* Try direct flash write as fallback with proper alignment AND boundary checking */
-			LOG_INF("Coredump: Attempting direct flash write");
-			
 			/* Calculate proper aligned offset and size */
 			size_t write_offset = header_size + total_written;
 			
 			/* CRITICAL: Check if write would exceed partition boundaries */
 			if (write_offset + copy_sz > backend_ctx.flash_area->fa_size) {
-				LOG_ERR("Direct write would exceed partition boundary!");
-				LOG_ERR("Write offset: 0x%x, size: %d, partition size: 0x%x", 
-						write_offset, copy_sz, backend_ctx.flash_area->fa_size);
 				backend_ctx.error = -ENOSPC;
 				break;
 			}
@@ -616,15 +571,9 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 			
 			/* CRITICAL: Double-check aligned write doesn't exceed partition */
 			if (aligned_offset + aligned_size > backend_ctx.flash_area->fa_size) {
-				LOG_ERR("Aligned direct write would exceed partition boundary!");
-				LOG_ERR("Aligned offset: 0x%x, aligned size: %d, partition size: 0x%x", 
-						aligned_offset, aligned_size, backend_ctx.flash_area->fa_size);
 				backend_ctx.error = -ENOSPC;
 				break;
 			}
-			
-			LOG_INF("Direct write: orig_offset=0x%x, aligned_offset=0x%x, size=%d->%d", 
-					write_offset, aligned_offset, copy_sz, aligned_size);
 			
 			/* Create aligned buffer */
 			uint8_t aligned_buf[aligned_size];
@@ -635,7 +584,6 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 				int ret = flash_area_read(backend_ctx.flash_area, aligned_offset, 
 						      aligned_buf, offset_adjustment);
 				if (ret != 0) {
-					LOG_ERR("Failed to read existing data for alignment: %d", ret);
 					backend_ctx.error = ret;
 					break;
 				}
@@ -647,10 +595,7 @@ static void coredump_flash_backend_buffer_output(uint8_t *buf, size_t buflen)
 			backend_ctx.error = flash_area_write(backend_ctx.flash_area,
 					aligned_offset, aligned_buf, aligned_size);
 			if (backend_ctx.error != 0) {
-				LOG_ERR("Direct flash write also failed: %d", backend_ctx.error);
 				break;
-			} else {
-				LOG_INF("Direct flash write succeeded");
 			}
 		}
 

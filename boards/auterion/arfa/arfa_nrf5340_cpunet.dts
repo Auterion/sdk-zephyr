@@ -163,17 +163,14 @@ arduino_spi: &spi0 {
 			label = "mcuboot";
 			reg = <0x00000000 0xc000>;
 		};
-		slot0_partition: partition@c000 {
+		slot0_partition: partition@1000 {
 			label = "image-0";
-			reg = <0x0000C000 0x17000>;
+			reg = <0x1000 0x3d000>;  /* 244KB - single slot, no OTA */
 		};
-		slot1_partition: partition@23000 {
-			label = "image-1";
-			reg = <0x00023000 0x17000>;
-		};
-		storage_partition: partition@3a000 {
+		/* Removed slot1_partition to save flash for single-slot development */
+		storage_partition: partition@3e000 {
 			label = "storage";
-			reg = <0x0003a000 0x6000>;
+			reg = <0x3e000 0x2000>;  /* 8KB reduced storage */
 		};
 	};
 };

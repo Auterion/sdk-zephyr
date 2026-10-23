@@ -365,6 +365,14 @@ static int write_synchronously(off_t addr, const void *data, size_t len)
 
 #endif /* !CONFIG_SOC_FLASH_NRF_RADIO_SYNC_NONE */
 
+/*
+ * Each NVMC write or erase step runs with interrupts locked. While the NVMC is
+ * write- or erase-enabled, code fetches from flash slow down so much that a
+ * busy high-priority control loop can take the whole CPU. A low-priority writer
+ * preempted inside that window never runs again to restore read-only mode, and
+ * every thread below the busy ones starves. The CPU barely executes during the
+ * step anyway, so the lock adds little latency.
+ */
 static int erase_op(void *context)
 {
 	uint32_t pg_size = nrfx_nvmc_flash_page_size_get();
@@ -402,12 +410,19 @@ static int erase_op(void *context)
 			e_ctx->flash_addr_next += pg_size;
 		}
 
-		if (nrfx_nvmc_page_partial_erase_continue()) {
+		unsigned int key = irq_lock();
+		bool slice_done = nrfx_nvmc_page_partial_erase_continue();
+
+		irq_unlock(key);
+		if (slice_done) {
 			e_ctx->len -= pg_size;
 			e_ctx->flash_addr += pg_size;
 		}
 #else
+		unsigned int key = irq_lock();
+
 		(void)nrfx_nvmc_page_erase(e_ctx->flash_addr);
+		irq_unlock(key);
 		e_ctx->len -= pg_size;
 		e_ctx->flash_addr += pg_size;
 #endif /* CONFIG_SOC_FLASH_NRF_PARTIAL_ERASE */
@@ -461,9 +476,14 @@ static int write_op(void *context)
 			return -ECANCELED;
 		}
 
-		nrfx_nvmc_bytes_write(w_ctx->flash_addr,
+		{
+			unsigned int key = irq_lock();
+
+			nrfx_nvmc_bytes_write(w_ctx->flash_addr,
 				      (const void *)w_ctx->data_addr,
 				      count);
+			irq_unlock(key);
+		}
 
 		RESUME_POFWARN();
 		shift_write_context(count, w_ctx);
@@ -484,8 +504,13 @@ static int write_op(void *context)
 			return -ECANCELED;
 		}
 
-		nrfx_nvmc_word_write(w_ctx->flash_addr,
+		{
+			unsigned int key = irq_lock();
+
+			nrfx_nvmc_word_write(w_ctx->flash_addr,
 				     UNALIGNED_GET((uint32_t *)w_ctx->data_addr));
+			irq_unlock(key);
+		}
 		RESUME_POFWARN();
 		shift_write_context(sizeof(uint32_t), w_ctx);
 
@@ -507,9 +532,14 @@ static int write_op(void *context)
 			return -ECANCELED;
 		}
 
-		nrfx_nvmc_bytes_write(w_ctx->flash_addr,
+		{
+			unsigned int key = irq_lock();
+
+			nrfx_nvmc_bytes_write(w_ctx->flash_addr,
 				      (const void *)w_ctx->data_addr,
 				      w_ctx->len);
+			irq_unlock(key);
+		}
 		RESUME_POFWARN();
 		shift_write_context(w_ctx->len, w_ctx);
 	}

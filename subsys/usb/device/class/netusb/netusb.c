@@ -24,6 +24,15 @@ static struct __netusb {
 	const struct netusb_function *func;
 } netusb;
 
+/* Called with each Ethernet frame as it crosses the USB link: transmitted once the host has taken all of it,
+ * received once all of it has arrived. Override it to timestamp frames on the link rather than in the stack.
+ */
+__weak void netusb_on_link(struct net_pkt *pkt, bool tx)
+{
+	ARG_UNUSED(pkt);
+	ARG_UNUSED(tx);
+}
+
 static int netusb_send(const struct device *dev, struct net_pkt *pkt)
 {
 	int ret;
@@ -42,6 +51,8 @@ static int netusb_send(const struct device *dev, struct net_pkt *pkt)
 		return ret;
 	}
 
+	netusb_on_link(pkt, true);
+
 	return 0;
 }
 
@@ -53,6 +64,8 @@ struct net_if *netusb_net_iface(void)
 void netusb_recv(struct net_pkt *pkt)
 {
 	LOG_DBG("Recv pkt, len %zu", net_pkt_get_len(pkt));
+
+	netusb_on_link(pkt, false);
 
 	if (net_recv_data(netusb.iface, pkt) < 0) {
 		LOG_ERR("Packet %p dropped by NET stack", pkt);

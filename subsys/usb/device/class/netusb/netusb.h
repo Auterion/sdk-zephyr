@@ -26,6 +26,7 @@ struct netusb_function {
 
 struct net_if *netusb_net_iface(void);
 void netusb_recv(struct net_pkt *pkt);
+void netusb_on_link(struct net_pkt *pkt, bool tx);
 
 void netusb_enable(const struct netusb_function *func);
 void netusb_disable(void);
